@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchboard</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d36; --text: #e6edf3; --muted: #8b949e;
+    --done: #3fb950; --exh: #d29922; --dnd: #f85149; --live: #58a6ff; --ready: #30363d; --hold: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 16px; align-items: baseline; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .02em; }
+  .clock { font: 600 22px ui-monospace, "Cascadia Code", Consolas, monospace; }
+  .muted { color: var(--muted); }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--ready); }
+  .badge.ok { background: rgba(63,185,80,.18); color: var(--done); }
+  .badge.run { background: rgba(88,166,255,.18); color: var(--live); }
+  main { display: grid; gap: 16px; padding: 16px 24px 32px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .wide { grid-column: 1 / -1; }
+  .slots { display: flex; gap: 6px; margin: 6px 0 12px; }
+  .slot { width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
+  .slot.on { background: var(--live); border-color: var(--live); box-shadow: 0 0 10px rgba(88,166,255,.5); }
+  .slot.hold { border: 2px dashed var(--hold); }
+  .bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--ready); margin: 6px 0; }
+  .bar span { display: block; height: 100%; transition: width .4s; }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat b { display: block; font: 600 22px ui-monospace, Consolas, monospace; }
+  .stat small { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font: 12px ui-monospace, Consolas, monospace; }
+  td { padding: 3px 6px; border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px; }
+  .k-result { color: var(--done); } .k-intent { color: var(--live); } .k-ambiguous, .k-late_placement { color: var(--hold); }
+  .k-boot { color: #d2a8ff; font-weight: 700; } .k-provider_rejected, .k-bad_signature { color: var(--dnd); font-weight: 700; }
+  .k-duplicate_result, .k-recovered_by_poll, .k-reconciled_not_placed { color: var(--exh); }
+  .open { color: var(--done); } .closed { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Switchboard</h1>
+  <span class="clock" id="clock">--</span>
+  <span class="muted" id="meta"></span>
+  <span class="badge" id="state">connecting</span>
+</header>
+<main>
+  <section><h2>Tenant slots</h2><div id="tenants"></div>
+    <div class="legend"><span><i class="dot" style="background:var(--live)"></i>live call</span>
+      <span><i class="dot" style="border:2px dashed var(--hold)"></i>held for a due callback</span></div></section>
+  <section style="grid-column: span 2"><h2>Campaigns</h2><div id="campaigns"></div>
+    <div class="legend"><span><i class="dot" style="background:var(--done)"></i>completed</span>
+      <span><i class="dot" style="background:var(--exh)"></i>exhausted</span>
+      <span><i class="dot" style="background:var(--dnd)"></i>dnd_blocked</span>
+      <span><i class="dot" style="background:var(--live)"></i>dialing / on call</span>
+      <span><i class="dot" style="background:var(--ready)"></i>waiting</span></div></section>
+  <section class="wide"><h2>Survived so far</h2><div class="stats" id="stats"></div></section>
+  <section><h2>Next callbacks</h2><table id="callbacks"></table></section>
+  <section style="grid-column: span 2"><h2>Journal (append-only)</h2><table id="journal"></table></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const hhmm = iso => iso ? iso.slice(5, 16).replace("T", " ") : "";
+const STATS = [["boot","process lives"],["ambiguous","504s / unknowns resolved"],["unavailable_503","503s retried"],
+  ["duplicate_result","duplicate webhooks ignored"],["recovered_by_poll","results recovered by polling"],
+  ["late_placement","late placements caught"],["dnd_blocked","leads DND-blocked"],["provider_rejected","provider rejections"]];
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("status")).json(); } catch { $("state").textContent = "offline (restarting?)"; $("state").className = "badge"; return; }
+  $("clock").textContent = new Date(s.sim_now).toLocaleString("en-IN", {timeZone: "Asia/Kolkata", weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false}) + " IST";
+  $("meta").textContent = `run ${s.run_tag} · ${s.speed}x`;
+  $("state").textContent = s.done ? "all leads final" : "dispatching";
+  $("state").className = "badge " + (s.done ? "ok" : "run");
+
+  $("tenants").innerHTML = s.tenants.map(t => {
+    let cells = "";
+    for (let i = 0; i < t.max; i++) {
+      const cls = i < t.live ? "on" : (i < t.live + t.held_for_callbacks ? "hold" : "");
+      cells += `<div class="slot ${cls}"></div>`;
+    }
+    return `<div class="row"><b>${esc(t.tenant_id)}</b><span class="muted">${t.live}/${t.max} live</span></div><div class="slots">${cells}</div>`;
+  }).join("");
+
+  $("campaigns").innerHTML = s.campaigns.map(c => {
+    const st = c.states, n = c.total || 1, pct = k => (100 * (st[k] || 0) / n) + "%";
+    const fin = (st.completed || 0) + (st.exhausted || 0) + (st.dnd_blocked || 0);
+    const win = c.window_open ? `<span class="open">window open · closes ${hhmm(c.closes_at)}</span>`
+                              : `<span class="closed">closed · opens ${hhmm(c.next_open)}</span>`;
+    return `<div class="row"><b>${esc(c.campaign_id)}</b><span class="muted">${fin}/${c.total} final · ${c.attempts} calls · ${win}</span></div>
+      <div class="bar"><span style="width:${pct("completed")};background:var(--done)"></span><span style="width:${pct("exhausted")};background:var(--exh)"></span>
+      <span style="width:${pct("dnd_blocked")};background:var(--dnd)"></span><span style="width:${(100 * ((st.active || 0) + (st.dialing || 0)) / n)}%;background:var(--live)"></span></div>`;
+  }).join("");
+
+  const k = s.counters;
+  $("stats").innerHTML = STATS.map(([key, label]) => `<div class="stat"><b>${k[key] || 0}</b><small>${label}</small></div>`).join("")
+    + `<div class="stat"><b>${s.callbacks.late_p50_min ?? "–"} / ${s.callbacks.late_max_min ?? "–"}</b><small>callback lateness p50 / max (min)</small></div>`;
+
+  $("callbacks").innerHTML = s.callbacks.upcoming.length
+    ? s.callbacks.upcoming.map(c => `<tr><td>${esc(c.campaign_id)}/${esc(c.lead_id)}</td><td>${hhmm(c.due)}</td><td>${c.in_min > 0 ? "in " + c.in_min + " min" : "due"}</td></tr>`).join("")
+    : `<tr><td class="muted">none pending</td></tr>`;
+
+  $("journal").innerHTML = s.recent.map(r => `<tr><td>${r.seq}</td><td>${hhmm(r.sim_at)}</td><td>pid ${r.pid}</td>
+    <td class="k-${esc(r.kind)}">${esc(r.kind)}</td><td>${esc(r.lead)}</td><td class="muted">${esc(r.detail)}</td></tr>`).join("");
+}
+refresh(); setInterval(refresh, 700);
+</script>
+</body>
+</html>
