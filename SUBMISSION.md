@@ -3,7 +3,9 @@
 ## Candidate
 - **Name:** Pratham Ahuja
 - **Assignment chosen:** B (Workflow): **Switchboard**, a crash-proof campaign dispatcher
-- **Time spent (honest estimate):** _fill in_
+- **Time spent (honest estimate):** about 1.5 h designing, building and testing with an AI coding
+  agent (including three end-to-end chaos runs of about 9 min each), plus additional time reviewing
+  the code to be able to explain and change it (see `AI_USAGE.md`)
 
 ## How to run
 ```bash
